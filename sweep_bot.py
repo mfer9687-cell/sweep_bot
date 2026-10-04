@@ -153,8 +153,10 @@ def send(text):
     if not TOKEN or not CHAT:
         print(text)
         return
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                  data={"chat_id": CHAT, "text": text}, timeout=20)
+    for chat in CHAT.split(","):
+        if chat.strip():
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                          data={"chat_id": chat.strip(), "text": text}, timeout=20)
 
 
 def main():
