@@ -159,16 +159,67 @@ def send(text):
                           data={"chat_id": chat.strip(), "text": text}, timeout=20)
 
 
+def resolve(state):
+    """نتیجه سیگنال‌های باز را از روی کندل‌های بعدی تعیین می‌کند (تست زنده)."""
+    log = state.setdefault("__log__", [])
+    stats = state.setdefault("__stats__", {"n": 0, "wins": 0, "sumR": 0.0})
+    now = pd.Timestamp.now(tz="UTC")
+    for tr in log:
+        if tr["status"] != "open":
+            continue
+        try:
+            df = load(tr["pair"])
+        except Exception as e:
+            print(tr["pair"], "resolve error:", e)
+            continue
+        if df is None:
+            continue
+        t0 = pd.Timestamp(tr["t"]) + pd.Timedelta(minutes=5)
+        bars = df[df.index >= t0]
+        s, entry, sl, tp = tr["s"], tr["entry"], tr["sl"], tr["tp"]
+        risk = abs(entry - sl)
+        label, R = None, 0.0
+        for _, row in bars.iterrows():
+            hit_sl = row.Low <= sl if s == 1 else row.High >= sl
+            hit_tp = row.High >= tp if s == 1 else row.Low <= tp
+            if hit_sl:                      # اگر هر دو در یک کندل بود، حد ضرر فرض می‌شود
+                label, R = "حد ضرر", -1.0
+                break
+            if hit_tp:
+                label, R = "حد سود", tr["rr"]
+                break
+        if label is None and len(bars) and now - t0 > pd.Timedelta(hours=48):
+            R = (bars.Close.iloc[-1] - entry) * s / risk
+            label = "بسته‌شدن بعد از ۴۸ ساعت"
+        if label is None:
+            continue
+        tr["status"], tr["R"] = "closed", round(float(R), 2)
+        stats["n"] += 1
+        stats["wins"] += 1 if R > 0 else 0
+        stats["sumR"] = round(stats["sumR"] + float(R), 2)
+        send(
+            f"نتیجه معامله\n"
+            f"{'خرید' if s == 1 else 'فروش'}\n"
+            f"{label}\n"
+            f"نتیجه به نسبت ریسک: {R:+.2f}\n"
+            f"مجموع تا امروز: {stats['n']} معامله، {stats['wins']} برد، مجموع {stats['sumR']:+.1f}\n"
+            f"{tr['pair']}"
+        )
+    state["__log__"] = log[-300:]
+
+
 def main():
     try:
         state = json.load(open(STATE))
     except Exception:
         state = {}
     today = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
-    state = {k: v for k, v in state.items() if v >= today}
+    state = {k: v for k, v in state.items() if k.startswith("__") or v >= today}
 
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
         send("ربات وصل است")
+
+    resolve(state)
 
     for pair in PAIRS:
         key = f"{pair}-{today}"
@@ -201,6 +252,10 @@ def main():
             f"{pair}"
         )
         state[key] = today
+        state.setdefault("__log__", []).append({
+            "pair": pair, "s": 1 if side == "خرید" else -1, "t": t.isoformat(),
+            "entry": float(entry), "sl": float(sl), "tp": float(tp),
+            "rr": float(rr), "status": "open"})
 
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and AGE:
         lines = ["سن آخرین کندل (دقیقه)"] + [f"{p}: {v:.1f}" for p, v in AGE.items()]
